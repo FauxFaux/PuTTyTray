@@ -1713,6 +1713,12 @@ void setup_config_box(struct controlbox *b, int midsession,
 		  conf_checkbox_handler,
 		  I(CONF_erase_to_scrollback));
 
+	s = ctrl_getset(b, "Window", "pastedelay", "Copy and Paste");
+	ctrl_editbox(s, "Paste Delay per Line (ms)", '9', 20, 
+		HELPCTX(window_pastedelay), 
+		conf_editbox_handler, 
+		I(CONF_pastedelay), I(-1));
+
     /*
      * The Window/Appearance panel.
      */
