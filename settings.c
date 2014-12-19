@@ -88,7 +88,8 @@ const char* urlhack_default_regex =
                     "tattoo|technology|tel|tips|today|tokyo|tools|top|town|toys|"
                     "trade|training|travel|university|uno|uol|vegas|ventures|"
                     "viajes|vision|vote|voyage|wales|wang|watch|webcam|website|"
-                    "wien|wiki|works|wtf|xxx|xyz|yandex|yokohama|youtube|zone"
+                    "wien|wiki|works|wtf|xxx|xyz|yandex|yokohama|youtube|zone|"
+                    "[a-zA-Z][a-zA-Z]"
                 ")"
             ")"
             "|([a-z]+[0-9]*)" // http://foo
