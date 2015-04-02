@@ -342,7 +342,7 @@ static void start_backend(void)
     if (!realhost)
         realhost = _strdup("");
 
-    if (PROT_SSH != conf_get_int(conf, CONF_protocol)) {
+    if (error && PROT_SSH != conf_get_int(conf, CONF_protocol)) {
         fatalbox("%s", error);
     }
 
