@@ -392,9 +392,9 @@ static void close_session(void *ignored_context)
 {
     char morestuff[100];
     int i;
-
+    
     if (!must_close_session) 
-      return;
+    	return;
 
     session_closed = TRUE;
     sprintf(morestuff, "%.70s (inactive)", appname);
@@ -422,7 +422,7 @@ static void close_session(void *ignored_context)
 	InsertMenu(popup_menus[i].menu, IDM_DUPSESS, MF_BYCOMMAND | MF_ENABLED,
 		   IDM_RESTART, "&Restart Session");
     }
-
+    
     /*
      * Unset the 'must_close_session' flag, or else we'll come
      * straight back here the next time we go round the main message
@@ -2359,8 +2359,8 @@ void notify_remote_exit(void *fe)
 	    (close_on_exit == AUTO && exitcode != INT_MAX)) {
 	    PostQuitMessage(0);
 	} else {
-        queue_toplevel_callback(close_session, NULL);
-	    must_close_session = TRUE;
+            queue_toplevel_callback(close_session, NULL);
+            must_close_session = TRUE;
 	    session_closed = TRUE;
 	    /* exitcode == INT_MAX indicates that the connection was closed
 	     * by a fatal error, so an error box will be coming our way and
