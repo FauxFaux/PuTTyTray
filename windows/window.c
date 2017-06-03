@@ -3364,7 +3364,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 	if (wParam == SIZE_MINIMIZED) {
 
 		BYTE keys[256];
-		int control_pressed;
+		int control_pressed = FALSE;
 		if (GetKeyboardState(keys)!=0) {
 			control_pressed=keys[VK_CONTROL]&0x80;
 		}
