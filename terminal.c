@@ -12,6 +12,10 @@
 #include "putty.h"
 #include "terminal.h"
 
+
+#include "urlhack.h"
+
+
 #define poslt(p1, p2) ((p1).y < (p2).y || ((p1).y == (p2).y && (p1).x < (p2).x))
 #define posle(p1, p2)                                                          \
   ((p1).y < (p2).y || ((p1).y == (p2).y && (p1).x <= (p2).x))
@@ -4959,6 +4963,52 @@ static void do_paint(Terminal *term, Context ctx, int may_optimise)
 #endif /* OPTIMISE_SCROLL */
   termchar *newline;
 
+
+  int urlhack_underline_always =
+      (conf_get_int(term->conf, CONF_url_underline) ==
+       URLHACK_UNDERLINE_ALWAYS);
+
+  int urlhack_underline =
+      conf_get_int(term->conf, CONF_url_underline) ==
+      URLHACK_UNDERLINE_ALWAYS ||
+      (conf_get_int(term->conf, CONF_url_underline) ==
+       URLHACK_UNDERLINE_HOVER &&
+       (!conf_get_int(term->conf, CONF_url_ctrl_click) ||
+        urlhack_is_ctrl_pressed()))
+      ? 1
+      : 0;
+  int urlhack_is_link = 0, urlhack_hover_current = 0;
+  int urlhack_toggle_x = term->cols, urlhack_toggle_y = term->rows;
+  unsigned int urlhack_region_index = 0;
+  text_region urlhack_region;
+
+  if (term->url_update) {
+    urlhack_reset();
+
+    for (i = 0; i < term->rows; i++) {
+      termline *lp = lineptr(term->disptop + i);
+
+      for (j = 0; j < term->cols; j++) {
+        unsigned long tchar = lp->chars[j].chr;
+        urlhack_putchar(tchar & CHAR_MASK ? (char)(tchar & CHAR_MASK) : ' ');
+      }
+
+      unlineptr(lp);
+    }
+
+    urlhack_go_find_me_some_hyperlinks(term->cols);
+  }
+  urlhack_region = urlhack_get_link_region(urlhack_region_index);
+  urlhack_toggle_x = urlhack_region.x0;
+  urlhack_toggle_y = urlhack_region.y0;
+
+  if (urlhack_underline_always)
+    urlhack_hover_current = 1;
+  else
+    urlhack_hover_current = urlhack_is_in_this_link_region(
+        urlhack_region, urlhack_mouse_old_x, urlhack_mouse_old_y);
+
+
   chlen = 1024;
   ch = snewn(chlen, wchar_t);
 
@@ -5109,6 +5159,45 @@ static void do_paint(Terminal *term, Context ctx, int may_optimise)
       }
       if (j < term->cols - 1 && d[1].chr == UCSWIDE)
         tattr |= ATTR_WIDE;
+
+
+      //  Hyperlink stuff: Underline link regions if user has configured us so
+      if (urlhack_underline) {
+        if (j == urlhack_toggle_x && i == urlhack_toggle_y) {
+          urlhack_is_link = urlhack_is_link == 1 ? 0 : 1;
+
+          // Find next bound for the toggle
+
+          if (urlhack_is_link == 1) {
+            urlhack_toggle_x = urlhack_region.x1;
+            urlhack_toggle_y = urlhack_region.y1;
+
+            if (urlhack_toggle_x == term->cols - 1) {
+              // Handle special case where link ends at the last char of the row
+              urlhack_toggle_y++;
+              urlhack_toggle_x = 0;
+            }
+          } else {
+            urlhack_region = urlhack_get_link_region(++urlhack_region_index);
+
+            if (urlhack_underline_always)
+              urlhack_hover_current = 1;
+            else
+              urlhack_hover_current = urlhack_is_in_this_link_region(
+                  urlhack_region, urlhack_mouse_old_x, urlhack_mouse_old_y);
+
+            urlhack_toggle_x = urlhack_region.x0;
+            urlhack_toggle_y = urlhack_region.y0;
+          }
+        }
+
+        if (urlhack_is_link == 1 && urlhack_hover_current == 1) {
+          tattr |= ATTR_UNDER;
+        }
+
+        term->url_update = 0;
+      }
+
 
       /* Video reversing things */
       if (term->selstate == DRAGGING || term->selstate == SELECTED) {
@@ -5483,7 +5572,12 @@ static void clip_addchar(clip_workbuf *b, wchar_t chr, int attr)
   b->bufpos++;
 }
 
-static void clipme(Terminal *term, pos top, pos bottom, int rect, int desel)
+void clipme(Terminal *term,
+            pos top,
+            pos bottom,
+            int rect,
+            int desel,
+            void (*output)(Terminal *, void *, wchar_t *, int *, int, int))
 {
   clip_workbuf buf;
   int old_top_x;
@@ -5639,7 +5733,7 @@ static void clipme(Terminal *term, pos top, pos bottom, int rect, int desel)
 clip_addchar(&buf, 0, 0);
 #endif
 /* Finally, transfer all that to the clipboard. */
-write_clip(term->frontend, buf.textbuf, buf.attrbuf, buf.bufpos, desel);
+output(term, term->frontend, buf.textbuf, buf.attrbuf, buf.bufpos, desel);
 sfree(buf.textbuf);
 sfree(buf.attrbuf);
 }
@@ -5653,7 +5747,7 @@ void term_copyall(Terminal *term)
   top.x = 0;
   bottom.y = find_last_nonempty_line(term, screen);
   bottom.x = term->cols;
-  clipme(term, top, bottom, 0, TRUE);
+  clipme(term, top, bottom, 0, TRUE, write_clip);
 }
 
 /*
@@ -5941,6 +6035,21 @@ void term_do_paste(Terminal *term)
   queue_toplevel_callback(term_paste_callback, term);
 }
 
+
+void urlhack_launch_url_helper(Terminal *term,
+                               void *frontend,
+                               wchar_t *data,
+                               int *attr,
+                               int len,
+                               int must_deselect)
+{
+  urlhack_launch_url(!conf_get_int(term->conf, CONF_url_defbrowser)
+                     ? conf_get_filename(term->conf, CONF_url_browser)->path
+                     : NULL,
+                     data);
+}
+
+
 void term_mouse(Terminal *term,
                 Mouse_Button braw,
                 Mouse_Button bcooked,
@@ -6109,6 +6218,29 @@ void term_mouse(Terminal *term,
     term->seltype = default_seltype;
     term->selanchor = selpoint;
     term->selmode = SM_CHAR;
+
+
+  } else if (bcooked == MBT_SELECT && a == MA_RELEASE &&
+              term->selstate == ABOUT_TO) {
+    deselect(term);
+    term->selstate = NO_SELECTION;
+
+    if ((!conf_get_int(term->conf, CONF_url_ctrl_click) ||
+         (conf_get_int(term->conf, CONF_url_ctrl_click) &&
+          urlhack_is_ctrl_pressed())) &&
+        urlhack_is_in_link_region(x, y)) {
+      wchar_t *linkbuf = NULL;
+      text_region region = urlhack_get_link_bounds(x, y);
+      pos top, bottom;
+      top.x = region.x0;
+      top.y = region.y0 + term->disptop;
+      bottom.x = region.x1;
+      bottom.y = region.y1 + term->disptop;
+      clipme(term, top, bottom, 0, 0, urlhack_launch_url_helper);
+      sfree(linkbuf);
+    }
+
+
   } else if (bcooked == MBT_SELECT && (a == MA_2CLK || a == MA_3CLK)) {
     deselect(term);
     term->selmode = (a == MA_2CLK ? SM_WORD : SM_LINE);
@@ -6206,7 +6338,8 @@ void term_mouse(Terminal *term,
              term->selstart,
              term->selend,
              (term->seltype == RECTANGULAR),
-             FALSE);
+             FALSE,
+             write_clip);
       term->selstate = SELECTED;
     } else
       term->selstate = NO_SELECTION;

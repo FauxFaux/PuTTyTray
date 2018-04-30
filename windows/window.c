@@ -228,6 +228,11 @@ static UINT wm_mousewheel = WM_MOUSEWHEEL;
     (wch) <= 0x180D) || /* MONGOLIAN FREE VARIATION SELECTOR */                \
    ((wch) >= 0xFE00 && (wch) <= 0xFE0F)) /* VARIATION SELECTOR 1-16 */
 
+
+
+static int urlhack_cursor_is_hand = 0;
+
+
 const int share_can_be_downstream = TRUE;
 const int share_can_be_upstream = TRUE;
 
@@ -409,6 +414,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
   init_winfuncs();
 
   conf = conf_new();
+
+
+
+  urlhack_init();
+
 
   /*
    * Initialize COM.
@@ -885,6 +895,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
   start_backend();
 
+
+
+  urlhack_set_regular_expression(conf_get_int(term->conf, CONF_url_defregex),
+  conf_get_str(term->conf, CONF_url_regex));
+
+
   /*
    * Set up the initial input locale.
    */
@@ -994,6 +1010,11 @@ void cleanup_exit(int code)
   /*
    * Clean up.
    */
+
+
+  urlhack_cleanup();
+
+
   deinit_fonts();
   sfree(logpal);
   if (pal)
@@ -1059,6 +1080,79 @@ static void update_savedsess_menu(void)
   if (sesslist.nsessions <= 1)
     AppendMenu(savedsess_menu, MF_GRAYED, IDM_SAVED_MIN, "(No sessions)");
 }
+
+
+
+void append_url_to_menu(Terminal *term,
+                        void *menu,
+                        wchar_t *data,
+                        int *attr,
+                        int len,
+                        int must_deselect)
+{
+  unsigned int i = 0;
+  BOOL found = FALSE;
+  wchar_t *fixed, *fixing, *search;
+  if (update_url_id > (IDM_URL_MAX - IDM_URL_MIN))
+    return;
+  fixing = fixed = snewn(wcslen(data) + MAX_PATH, wchar_t);
+  search = data;
+
+  if (search[strlen("http:/")] == '/')
+    for (i = 0; i < strlen("http:/"); ++i)
+      *fixing++ = *search++;
+
+  while (*search && i++ < MAX_PATH) {
+    if (!found && *search < 'z' && !url_character_used[*search]) {
+      url_character_used[*search] = TRUE;
+      found = TRUE;
+      *fixing++ = '&';
+    }
+    if (*search == '&')
+      *fixing++ = '&';
+    *fixing++ = *search++;
+  }
+
+  *fixing++ = 0;
+
+  AppendMenuW(url_menu,
+              MF_ENABLED,
+              IDM_URL_MIN + (update_url_id),
+              *fixed ? fixed : data);
+  ++update_url_id;
+  sfree(fixed);
+}
+
+void urlhack_for_every_link(
+    Terminal *term,
+    void (*output)(Terminal *, void *, wchar_t *, int *, int, int));
+
+static void update_url_menu()
+{
+  int i;
+  while (DeleteMenu(url_menu, 0, MF_BYPOSITION))
+    ;
+
+  update_url_id = 0;
+  for (i = 0; i < UCHAR_MAX; ++i)
+    url_character_used[i] = FALSE;
+  url_character_used['/'] = TRUE;
+  url_character_used['.'] = TRUE;
+
+  urlhack_for_every_link(&append_url_to_menu);
+}
+
+void url_menu_find_and_launch(Terminal *term,
+                              void *menu,
+                              wchar_t *data,
+                              int *attr,
+                              int len,
+                              int must_deselect)
+{
+  if (search_url_id++ == url_target_id)
+    urlhack_launch_url_helper(term, menu, data, attr, len, must_deselect);
+}
+
 
 /*
  * Update the Special Commands submenu.
@@ -2244,6 +2338,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd,
       get_sesslist(&sesslist, TRUE);
       update_savedsess_menu();
       return 0;
+    } else if ((HMENU)wParam == url_menu) {
+      update_url_menu();
     }
     break;
   case WM_COMMAND:
@@ -2409,6 +2505,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd,
       /* Pass new config data to the back end */
       if (back)
         back->reconfig(backhandle, conf);
+
+
+      urlhack_set_regular_expression(conf_get_int(conf, CONF_url_defregex),
+          conf_get_str(conf, CONF_url_regex));
+
+      term->url_update = TRUE;
+
 
       /* Screen size changed ? */
       if (conf_get_int(conf, CONF_height) !=
@@ -2584,6 +2687,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd,
         if (back)
           back->special(backhandle, specials[i].code);
       }
+
+
+      if (wParam >= IDM_URL_MIN && wParam < (IDM_URL_MIN + update_url_id)) {
+        url_target_id = wParam - IDM_URL_MIN;
+        search_url_id = 0;
+        urlhack_for_every_link(&url_menu_find_and_launch);
+      }
+
+
     }
     break;
 
@@ -2737,6 +2849,44 @@ static LRESULT CALLBACK WndProc(HWND hwnd,
      * number noise.
      */
     noise_ultralight(lParam);
+
+
+    if (urlhack_mouse_old_x != TO_CHR_X(X_POS(lParam)) ||
+        urlhack_mouse_old_y != TO_CHR_Y(Y_POS(lParam))) {
+      urlhack_mouse_old_x = TO_CHR_X(X_POS(lParam));
+      urlhack_mouse_old_y = TO_CHR_Y(Y_POS(lParam));
+
+      if ((!conf_get_int(term->conf, CONF_url_ctrl_click) ||
+           urlhack_is_ctrl_pressed()) &&
+          urlhack_is_in_link_region(urlhack_mouse_old_x, urlhack_mouse_old_y)) {
+        if (urlhack_cursor_is_hand == 0) {
+          SetClassLongPtr(
+              hwnd,
+              GCLP_HCURSOR,
+              (LONG_PTR)LoadCursor(NULL, MAKEINTRESOURCE(IDC_HAND)));
+          urlhack_cursor_is_hand = 1;
+          term_update(
+              term); // Force the terminal to update, otherwise the underline
+                     // will not show (bug somewhere, this is an ugly fix)
+        }
+      } else if (urlhack_cursor_is_hand == 1) {
+        SetClassLongPtr(hwnd,
+                        GCLP_HCURSOR,
+                        (LONG_PTR)LoadCursor(NULL, MAKEINTRESOURCE(IDC_IBEAM)));
+        urlhack_cursor_is_hand = 0;
+        term_update(term); // Force the terminal to update, see above
+      }
+
+      // If mouse jumps from one link directly into another, we need a forced
+      // terminal update too
+      if (urlhack_is_in_link_region(urlhack_mouse_old_x, urlhack_mouse_old_y) !=
+          urlhack_current_region) {
+        urlhack_current_region =
+            urlhack_is_in_link_region(urlhack_mouse_old_x, urlhack_mouse_old_y);
+        term_update(term);
+      }
+    }
+
 
     if (wParam & (MK_LBUTTON | MK_MBUTTON | MK_RBUTTON) &&
         GetCapture() == hwnd) {
@@ -3222,10 +3372,31 @@ static LRESULT CALLBACK WndProc(HWND hwnd,
       }
     }
     return FALSE;
+
+
   case WM_KEYDOWN:
-  case WM_SYSKEYDOWN:
+    if (wParam == VK_CONTROL && conf_get_int(term->conf, CONF_url_ctrl_click)) {
+      GetCursorPos(&cursor_pt);
+      ScreenToClient(hwnd, &cursor_pt);
+
+      if (urlhack_is_in_link_region(TO_CHR_X(cursor_pt.x),
+                                    TO_CHR_Y(cursor_pt.y))) {
+        SetCursor(LoadCursor(NULL, IDC_HAND));
+        term_update(term);
+      }
+      goto KEY_END;
+    } // fallthrough
   case WM_KEYUP:
+    if (wParam == VK_CONTROL && conf_get_int(term->conf, CONF_url_ctrl_click)) {
+      SetCursor(LoadCursor(NULL, IDC_IBEAM));
+      term_update(term);
+      goto KEY_END;
+    } // fallthrough
+  KEY_END:
+  case WM_SYSKEYDOWN:
   case WM_SYSKEYUP:
+
+
     /*
      * Add the scan code and keypress timing to the random
      * number noise.
@@ -5169,8 +5340,12 @@ void write_aclip(void *frontend, char *data, int len, int must_deselect)
 /*
  * Note: unlike write_aclip() this will not append a nul.
  */
-void write_clip(
-    void *frontend, wchar_t *data, int *attr, int len, int must_deselect)
+void write_clip(Terminal *term,
+                void *frontend,
+                wchar_t *data,
+                int *attr,
+                int len,
+                int must_deselect)
 {
   HGLOBAL clipdata, clipdata2, clipdata3;
   int len2;
